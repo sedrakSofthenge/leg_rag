@@ -1,0 +1,36 @@
+paths:
+  data_raw: data_raw
+  data_text: data_text
+  vdb_path: vdb
+  manifest_sqlite: .manifest.sqlite
+
+qdrant:
+  mode: local           # local | http
+  url: http://localhost:6333
+  path: ${paths.vdb_path}
+  collection: armenian_legal_chunks
+  distance: cosine      # cosine | dot | euclid
+
+embeddings:
+  provider: openai      # openai | fake
+  model: text-embedding-3-large
+  dim: 3072             # Used if provider is fake or for schema pre-create
+  batch_size: 64
+  key_file: openai_key.txt
+  max_input_tokens: 8000
+
+ingest:
+  chunk_size_tokens: 500
+  chunk_overlap_tokens: 200
+  top_k: 40
+  reranker_enabled: true
+  batch_size: 64
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  llm_answer:
+    enabled: true
+    model: gpt-5
+    temperature: 0.2
+    max_context_passages: 8

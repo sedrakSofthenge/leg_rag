@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local data
+data_text/
+vdb/
+.manifest.sqlite
+
+# Secrets
+openai_key.txt
+.env
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/

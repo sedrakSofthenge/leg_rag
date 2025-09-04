@@ -1,0 +1,14 @@
+# Core
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.23,<1.0
+pydantic>=2.5,<3.0
+PyYAML>=6.0.1,<7.0
+pypdf>=4.2.0,<5.0
+qdrant-client>=1.8.2,<2.0
+
+# Embeddings / LLM (optional)
+openai>=1.30.0,<2.0
+tiktoken>=0.7.0,<1.0
+
+# Testing (optional)
+pytest>=7.4,<9.0
