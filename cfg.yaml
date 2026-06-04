@@ -1,5 +1,5 @@
 paths:
-  data_raw: data_raw
+  data_raw: data_raw_orig
   data_text: data_text
   vdb_path: vdb
   manifest_sqlite: .manifest.sqlite
@@ -12,25 +12,42 @@ qdrant:
   distance: cosine      # cosine | dot | euclid
 
 embeddings:
-  provider: openai      # openai | fake
-  model: text-embedding-3-large
-  dim: 3072             # Used if provider is fake or for schema pre-create
-  batch_size: 64
-  key_file: openai_key.txt
-  max_input_tokens: 8000
+  provider: bge-m3      # bge-m3 (local, dense+sparse, hybrid) | openai | fake
+  model: BAAI/bge-m3    # local HF model id for bge-m3; OpenAI model id otherwise
+  dim: 1024             # bge-m3 dense dim = 1024 (text-embedding-3-large = 3072)
+  batch_size: 12        # encode batch (CPU); raise if you have a GPU
+  key_file: openai_key.txt   # only used by openai provider / LLM answer
+  max_input_tokens: 8192     # bge-m3 supports up to 8192 tokens
 
 ingest:
-  chunk_size_tokens: 500
-  chunk_overlap_tokens: 200
+  chunk_size_tokens: 800
+  chunk_overlap_tokens: 150
   top_k: 40
-  reranker_enabled: true
   batch_size: 64
+  # Optional: map original law titles (e.g., Armenian) to English display titles during ingest
+  law_title_overrides: {}
+  # Regex patterns removed from page text during ingestion (case-insensitive)
+  noise_patterns:
+    - "Machine\\s+Translated\\s+by\\s+Google"
+    - "Translated\\s+by\\s+Google"
+    - "Digitized\\s+by\\s+Google"
+    - "Scanned\\s+by"
+    - "This\\s+is\\s+a\\s+machine\\s+translation"
 
 server:
   host: 0.0.0.0
   port: 8000
   llm_answer:
     enabled: true
-    model: gpt-5
+    model: gpt-5.5
     temperature: 0.2
-    max_context_passages: 8
+    max_context_passages: 15
+
+# Query-time cross-encoder reranker (re-scores retrieved passages; NOT used at ingest).
+# enabled: false by default — flip to true to use it. First query then downloads
+# the model (~2.3GB) and adds a few seconds/query on CPU.
+reranker:
+  enabled: false
+  provider: bge                       # bge (local cross-encoder) | none
+  model: BAAI/bge-reranker-v2-m3
+  top_n: 40                           # rerank only the top-N hybrid candidates

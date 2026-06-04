@@ -1,14 +1,25 @@
-# Core
+# ── Core RAG service ──────────────────────────────────────────────
 fastapi>=0.110,<1.0
 uvicorn[standard]>=0.23,<1.0
 pydantic>=2.5,<3.0
 PyYAML>=6.0.1,<7.0
 pypdf>=4.2.0,<5.0
-qdrant-client>=1.8.2,<2.0
+qdrant-client>=1.14,<2.0          # hybrid dense+sparse retrieval (RRF Query API)
 
-# Embeddings / LLM (optional)
+# ── Embeddings: BGE-M3 (local, dense 1024-d + sparse lexical) ─────
+# NOTE: pin FlagEmbedding to 1.3.5. The newer 1.4.0 passes a `dtype` kwarg
+# that requires transformers>=4.56 and crashes on older transformers.
+FlagEmbedding==1.3.5
+transformers>=4.40,<4.56          # must stay <4.56 for FlagEmbedding 1.3.5
+torch>=2.0                        # CPU wheel is fine; install a CUDA build separately for GPU
+
+# ── LLM answer generation (optional; OpenAI) ─────────────────────
+# Only needed if server.llm_answer.enabled = true in cfg.yaml.
 openai>=1.30.0,<2.0
-tiktoken>=0.7.0,<1.0
+tiktoken>=0.7.0,<1.0              # token-aware batching for the OpenAI embedder path
 
-# Testing (optional)
+# ── GUI (Streamlit) ──────────────────────────────────────────────
+streamlit>=1.32,<2.0
+
+# ── Testing (optional) ───────────────────────────────────────────
 pytest>=7.4,<9.0

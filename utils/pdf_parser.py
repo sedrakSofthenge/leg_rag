@@ -2,7 +2,7 @@ import hashlib
 import os
 import re
 from dataclasses import dataclass
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional, Iterable
 
 
 def compute_sha256(path: str) -> str:
@@ -35,6 +35,10 @@ def extract_text_pages(pdf_path: str) -> List[str]:
 ARTICLE_RE = re.compile(r"(?m)^\s*Հոդված\s+([0-9]+(?:\.[0-9]+)*)\.?\s*(.*)$")
 CHAPTER_RE = re.compile(r"(?m)^\s*ԳԼՈՒԽ\s+([0-9IVXLCDM]+)\.?\s*(.*)$")
 CATEGORY_RE = re.compile(r"(?m)^\s*ԲԱԺԻՆ\s+([0-9IVXLCDM]+)\.?\s*(.*)$")
+
+# English headers (some PDFs contain English overlays or translations)
+ARTICLE_EN_RE = re.compile(r"(?m)^\s*Article\s+([0-9]+(?:\.[0-9]+)*)\.?\s*(.*)$", re.IGNORECASE)
+CHAPTER_EN_RE = re.compile(r"(?m)^\s*(CHAPTER|SECTION|PART)\s+([0-9IVXLCDM]+)\.?\s*(.*)$", re.IGNORECASE)
 CLAUSE_RE = re.compile(r"(?m)^\s*(\d+)[\).]\s+")
 
 
@@ -44,7 +48,11 @@ def _filename_to_title(path: str) -> str:
     return re.sub(r"[_\-]+", " ", name).strip()
 
 
-def segment_armenian_law(pages: List[str], source_file: str) -> List[Dict[str, Any]]:
+def segment_armenian_law(
+    pages: List[str],
+    source_file: str,
+    noise_patterns: Optional[Iterable[str]] = None,
+) -> List[Dict[str, Any]]:
     """
     Segment Armenian law text by chapters -> articles -> clauses.
     Returns list of dicts: {law_title, chapter, article, clause, page_start, page_end, text, source_file}
@@ -108,28 +116,104 @@ def segment_armenian_law(pages: List[str], source_file: str) -> List[Dict[str, A
         current_article = None
         buffer_lines = []
 
+    # Compile noise patterns once
+    _compiled_noise = []
+    if noise_patterns:
+        for pat in noise_patterns:
+            try:
+                _compiled_noise.append(re.compile(pat, re.IGNORECASE))
+            except Exception:
+                # Skip invalid regex
+                pass
+
+    def _clean_text(text: str) -> str:
+        if not text:
+            return ""
+        # Remove known noisy overlays
+        # Example: "Machine Translated by Google" often appears in some PDFs
+        text = re.sub(r"Machine\s+Translated\s+by\s+Google", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"Translated\s+by\s+Google", "", text, flags=re.IGNORECASE)
+        # Apply user-provided noise patterns
+        for rx in _compiled_noise:
+            text = rx.sub("", text)
+        # Collapse excessive spaces introduced by removal
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        return text
+
+    # Identify repeated short header/footer lines across pages and mark for removal
+    # Heuristic: lines appearing on >= 30% of pages and length <= 120
+    line_counts: Dict[str, int] = {}
+    total_pages = max(1, len(pages))
+    for pg in pages:
+        if not pg:
+            continue
+        seen_on_page = set()
+        for raw_line in str(pg).splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if len(line) > 120 or len(line) < 3:
+                continue
+            # Avoid overcounting the same line multiple times per page
+            if line in seen_on_page:
+                continue
+            seen_on_page.add(line)
+            line_counts[line] = line_counts.get(line, 0) + 1
+    repeated_lines = {ln for ln, cnt in line_counts.items() if cnt >= max(3, int(0.3 * total_pages))}
+
+    def _strip_repeated_lines(text: str) -> str:
+        if not repeated_lines:
+            return text
+        kept = []
+        for raw_line in (text or "").splitlines():
+            line = raw_line.strip()
+            if line in repeated_lines:
+                continue
+            kept.append(raw_line)
+        return "\n".join(kept)
+
     for page_idx, page_text in enumerate(pages):
         if not page_text:
             page_text = ""
+        else:
+            page_text = _strip_repeated_lines(_clean_text(page_text))
         # Detect chapter on this page
         chm = CHAPTER_RE.search(page_text) or CATEGORY_RE.search(page_text)
+        if not chm:
+            chm = CHAPTER_EN_RE.search(page_text)
         if chm:
-            current_chapter = (chm.group(1), (chm.group(2) or "").strip())
+            if chm.re is CHAPTER_EN_RE:
+                # English: groups: label, id, title
+                current_chapter = (chm.group(2), (chm.group(3) or "").strip())
+            else:
+                current_chapter = (chm.group(1), (chm.group(2) or "").strip())
 
-        # Detect article starts on this page. There could be multiple occurrences, but
-        # in legal docs typically it's one article header per start.
+        # Detect ALL article starts on this page. Dense legal codes routinely pack
+        # several short articles onto one page, so we must split on every header —
+        # not just the last one (which would discard every article in between).
         article_matches = list(ARTICLE_RE.finditer(page_text))
+        if not article_matches:
+            article_matches = list(ARTICLE_EN_RE.finditer(page_text))
         if article_matches:
-            # flush existing article up to previous page
-            flush_article(page_idx - 1 if page_idx > 0 else 0)
-            # Keep everything after the last article marker for the new article
-            last = article_matches[-1]
-            a_id = last.group(1)
-            a_title = (last.group(2) or "").strip()
-            current_article = (a_id, a_title, page_idx)
-            # Capture rest of the page after the header
-            rest = page_text[last.end():]
-            buffer_lines = [rest]
+            # Text before the first header continues the article still open from a
+            # previous page; append it, then close that article on this page.
+            pre = page_text[: article_matches[0].start()]
+            if pre.strip():
+                buffer_lines.append(pre)
+            flush_article(page_idx)
+            # Each header opens a new article whose body runs to the next header
+            # (or end of page). Every article but the last on this page is fully
+            # contained here, so flush it immediately; the last stays open to
+            # continue onto the following page.
+            for i, m in enumerate(article_matches):
+                a_id = m.group(1)
+                a_title = (m.group(2) or "").strip()
+                body_end = article_matches[i + 1].start() if i + 1 < len(article_matches) else len(page_text)
+                body = page_text[m.end(): body_end]
+                current_article = (a_id, a_title, page_idx)
+                buffer_lines = [body]
+                if i + 1 < len(article_matches):
+                    flush_article(page_idx)
         else:
             # Continue accumulating into current article buffer
             if current_article is None:
@@ -146,4 +230,3 @@ def segment_armenian_law(pages: List[str], source_file: str) -> List[Dict[str, A
     flush_article(len(pages) - 1 if pages else 0)
 
     return segments
-

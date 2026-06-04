@@ -5,6 +5,10 @@ from typing import Any, Dict, List, Optional
 
 
 class QdrantConnector:
+    # Named-vector keys used in hybrid (dense + sparse) mode.
+    DENSE = "dense"
+    SPARSE = "lex"
+
     def __init__(
         self,
         collection: str,
@@ -13,10 +17,16 @@ class QdrantConnector:
         mode: str = "local",
         url: Optional[str] = None,
         path: Optional[str] = None,
+        hybrid: bool = False,
     ) -> None:
         try:
             from qdrant_client import QdrantClient
-            from qdrant_client.models import Distance, VectorParams, PointStruct
+            from qdrant_client.models import (
+                Distance,
+                VectorParams,
+                PointStruct,
+                SparseVectorParams,
+            )
         except Exception as e:
             raise RuntimeError(
                 "qdrant-client is required. Install with `pip install qdrant-client`."
@@ -26,6 +36,7 @@ class QdrantConnector:
         self._VectorParams = VectorParams
         self.collection = collection
         self._PointStruct = PointStruct
+        self.hybrid = hybrid
         dist = distance.lower()
         if dist == "cosine":
             self._distance = Distance.COSINE
@@ -45,10 +56,17 @@ class QdrantConnector:
 
         # Ensure collection exists
         if not self._collection_exists(collection):
-            self.client.recreate_collection(
-                collection_name=collection,
-                vectors_config=VectorParams(size=vector_size, distance=self._distance),
-            )
+            if hybrid:
+                self.client.create_collection(
+                    collection_name=collection,
+                    vectors_config={self.DENSE: VectorParams(size=vector_size, distance=self._distance)},
+                    sparse_vectors_config={self.SPARSE: SparseVectorParams()},
+                )
+            else:
+                self.client.recreate_collection(
+                    collection_name=collection,
+                    vectors_config=VectorParams(size=vector_size, distance=self._distance),
+                )
 
     def _collection_exists(self, name: str) -> bool:
         coll = self.client.get_collections()
@@ -90,34 +108,100 @@ class QdrantConnector:
         except Exception:
             return 0
 
+    def upsert_hybrid(
+        self,
+        ids: List[str],
+        dense: List[List[float]],
+        sparse: List[Dict[str, List]],
+        payloads: List[Dict[str, Any]],
+    ):
+        from qdrant_client.models import SparseVector
+
+        points = []
+        for pid, dv, sv, payload in zip(ids, dense, sparse, payloads):
+            qid = self._coerce_point_id(pid)
+            vec = {self.DENSE: dv}
+            # Skip empty sparse vectors (Qdrant rejects zero-length sparse input).
+            if sv and sv.get("indices"):
+                vec[self.SPARSE] = SparseVector(indices=sv["indices"], values=sv["values"])
+            points.append(self._PointStruct(id=qid, vector=vec, payload=payload))
+        self.client.upsert(collection_name=self.collection, points=points, wait=True)
+
+    def search_hybrid(
+        self,
+        dense: List[float],
+        sparse: Dict[str, List],
+        top_k: int = 20,
+        filters: Optional[Dict[str, Any]] = None,
+        prefetch_limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Dense + sparse retrieval fused with Reciprocal Rank Fusion (RRF)."""
+        from qdrant_client.models import (
+            Filter,
+            FieldCondition,
+            MatchValue,
+            Prefetch,
+            FusionQuery,
+            Fusion,
+            SparseVector,
+        )
+
+        qfilter = None
+        if filters:
+            must = [FieldCondition(key=k, match=MatchValue(value=v)) for k, v in filters.items()]
+            qfilter = Filter(must=must)
+
+        pf_limit = prefetch_limit or max(top_k * 3, 100)
+        prefetch = [Prefetch(query=dense, using=self.DENSE, limit=pf_limit, filter=qfilter)]
+        if sparse and sparse.get("indices"):
+            prefetch.append(
+                Prefetch(
+                    query=SparseVector(indices=sparse["indices"], values=sparse["values"]),
+                    using=self.SPARSE,
+                    limit=pf_limit,
+                    filter=qfilter,
+                )
+            )
+
+        res = self.client.query_points(
+            collection_name=self.collection,
+            prefetch=prefetch,
+            query=FusionQuery(fusion=Fusion.RRF),
+            limit=top_k,
+            with_payload=True,
+            with_vectors=False,
+        )
+        return [{"id": str(p.id), "score": p.score, "payload": p.payload} for p in res.points]
+
     def search(
         self,
         vector: List[float],
         top_k: int = 20,
         filters: Optional[Dict[str, Any]] = None,
+        hnsw_ef: Optional[int] = None,
+        score_threshold: Optional[float] = None,
+        with_payload: bool = True,
+        with_vectors: bool = False,
     ) -> List[Dict[str, Any]]:
         from qdrant_client.models import Filter, FieldCondition, MatchValue
 
         qfilter = None
         if filters:
-            must: List[Any] = []
-            for key, val in filters.items():
-                must.append(FieldCondition(key=key, match=MatchValue(value=val)))
+            must = [FieldCondition(key=k, match=MatchValue(value=v)) for k, v in filters.items()]
             qfilter = Filter(must=must)
+
+        search_params = {"hnsw_ef": hnsw_ef} if hnsw_ef is not None else None
 
         res = self.client.search(
             collection_name=self.collection,
             query_vector=vector,
             limit=top_k,
             query_filter=qfilter,
-            with_payload=True,
-            with_vectors=False,
+            score_threshold=score_threshold,
+            with_payload=with_payload,
+            with_vectors=with_vectors,
+            search_params=search_params,   # <-- NOT "params"
         )
-        out = []
-        for r in res:
-            out.append({
-                "id": str(r.id),
-                "score": r.score,
-                "payload": r.payload,
-            })
-        return out
+        return [{"id": str(r.id), "score": r.score, "payload": r.payload} for r in res]
+
+

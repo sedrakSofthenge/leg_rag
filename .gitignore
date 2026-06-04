@@ -3,10 +3,11 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
-# Local data
-data_text/
-vdb/
-.manifest.sqlite
+# Local data — vector stores, manifests, debug chunks (regeneratable, can be huge)
+vdb*/
+data_text*/
+.manifest*.sqlite*
+.ingest.*.log
 
 # Secrets
 openai_key.txt

@@ -1,0 +1,53 @@
+# English corpus config. Independent storage path + manifest + collection, so it
+# coexists with the Armenian DB (cfg.yaml). Usage:
+#   python3 -u ingest.py --cfg cfg.en.yaml --pdf-dir data_en
+#   python3 ask_cli.py    --cfg cfg.en.yaml
+#   RAG_CFG=cfg.en.yaml uvicorn query_server:app --port 8001
+paths:
+  data_raw: ../selenium_pdfs       # English PDFs (relative to project root)
+  data_text: data_text_en        # separate debug-chunk dir
+  vdb_path: vdb_en               # separate vector store (own lock)
+  manifest_sqlite: .manifest.en.sqlite
+
+qdrant:
+  mode: local           # local | http
+  url: http://localhost:6333
+  path: ${paths.vdb_path}
+  collection: english_legal_chunks
+  distance: cosine      # cosine | dot | euclid
+
+embeddings:
+  provider: bge-m3      # same multilingual model — handles English natively
+  model: BAAI/bge-m3
+  dim: 1024
+  batch_size: 4              # small batch — only 7.7GB RAM on this box
+  key_file: openai_key.txt   # only used by openai provider / LLM answer
+  max_input_tokens: 1024     # cap sequence length: attention mem ~ O(n^2); 8192 OOMs here
+
+ingest:
+  chunk_size_tokens: 800
+  chunk_overlap_tokens: 150
+  top_k: 40
+  batch_size: 64
+  law_title_overrides: {}
+  noise_patterns:
+    - "Machine\\s+Translated\\s+by\\s+Google"
+    - "Translated\\s+by\\s+Google"
+    - "Digitized\\s+by\\s+Google"
+    - "Scanned\\s+by"
+    - "This\\s+is\\s+a\\s+machine\\s+translation"
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  llm_answer:
+    enabled: true
+    model: gpt-5.5
+    temperature: 0.2
+    max_context_passages: 15
+
+reranker:
+  enabled: false
+  provider: bge
+  model: BAAI/bge-reranker-v2-m3
+  top_n: 40

@@ -81,6 +81,7 @@ Edit `cfg.yaml` to adjust chunk sizes, topK, reranker toggle, Qdrant mode (embed
 
 - If you don’t have an OpenAI key or prefer offline-only setup, set `embeddings.provider: fake` in `cfg.yaml`. This uses deterministic hashed vectors with smaller dimension (defaults to 384). This is good for plumbing and local testing, not for accuracy.
 - The segmentation heuristics for Armenian laws are regex-based and may need tuning for your corpus.
+- Noise removal: configure ingest-time noise patterns in `cfg.yaml` under `ingest.noise_patterns` (regex, case-insensitive). Common defaults include Google translation watermarks. The parser also removes short header/footer lines repeated across pages.
 - Answer generation and translation:
   - By default, answers are template-only (no LLM), so English questions won’t translate Armenian quotes.
   - To enable LLM answers with translation, set in `cfg.yaml`:

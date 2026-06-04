@@ -3,7 +3,11 @@ from __future__ import annotations
 import os
 import math
 import hashlib
-from typing import List, Optional
+from typing import Callable, List, Optional
+
+# OpenAI's embeddings endpoint caps total tokens per request at 300_000.
+# Stay safely under it to leave headroom for tokenizer estimate drift.
+_MAX_REQUEST_TOKENS = 280_000
 
 
 class Embeddings:
@@ -20,6 +24,7 @@ class Embeddings:
         self.model = model
         self.dim = dim
         self.batch_size = batch_size
+        self._token_counter: Optional[Callable[[str], int]] = None
 
         self._client = None
         if provider == "openai":
@@ -49,10 +54,33 @@ class Embeddings:
             raise ValueError(f"Unknown embeddings provider: {self.provider}")
 
     # --- Providers ---
+    def _count_tokens(self, text: str) -> int:
+        if self._token_counter is None:
+            from .tokenization import get_token_counter_for_model
+            self._token_counter = get_token_counter_for_model(self.model)
+        return self._token_counter(text)
+
+    def _batches(self, texts: List[str]):
+        """Yield batches bounded by both batch_size (count) and the per-request
+        token cap, so a request never exceeds OpenAI's 300k-token limit."""
+        batch: List[str] = []
+        batch_tokens = 0
+        for t in texts:
+            t_tok = self._count_tokens(t)
+            if batch and (
+                len(batch) >= self.batch_size
+                or batch_tokens + t_tok > _MAX_REQUEST_TOKENS
+            ):
+                yield batch
+                batch, batch_tokens = [], 0
+            batch.append(t)
+            batch_tokens += t_tok
+        if batch:
+            yield batch
+
     def _embed_openai(self, texts: List[str]) -> List[List[float]]:
         results: List[List[float]] = []
-        for i in range(0, len(texts), self.batch_size):
-            chunk = texts[i : i + self.batch_size]
+        for chunk in self._batches(texts):
             resp = self._client.embeddings.create(model=self.model, input=chunk)
             # New SDK returns objects with .data list and .embedding arrays
             for d in resp.data:
